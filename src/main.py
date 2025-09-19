@@ -4,14 +4,20 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import random
 #from types import SimpleNamespace
-from typing import Protocol, Any, Dict, List
+from typing import Protocol, Any, Dict, List, Optional, Literal
 from enum import Enum
 from dataclasses import dataclass
 
 
 # =============  event types ================
 
-VALID_ENEMIES = {"goblin", "soldier", "skeleton"}
+# VALID_ENEMIES = {"goblin", "soldier", "skeleton"}
+
+class EnemyTypes(Enum):
+  GOBLIN = 'goblin'
+  SOLDIER = 'soldier'
+  SKELETON = 'skeleton'
+  DRAGON = 'dragon'
 
 @dataclass
 class AttackStartedEvent:
@@ -268,124 +274,22 @@ class CharacterFactory:
     return Player(name=name, stats=stats, io_bus=io_bus, attack_strategy=attack_strategy)
   
   @staticmethod
-  def create_enemy(enemy_type: str, io_bus: EventBus, attack_strategy: IAttackStrategy) -> Enemy:
+  def create_enemy(enemy_type: EnemyTypes, io_bus: EventBus, attack_strategy: IAttackStrategy) -> Enemy:
     """ Factory method for creating enemies """
-    if enemy_type == "goblin":
+    if enemy_type == EnemyTypes.GOBLIN:
       stats = Stats(hp=40, attack=6, defense=3)
       return Enemy(name="Goblin", stats=stats, io_bus=io_bus, attack_strategy=attack_strategy)
-    elif enemy_type == "soldier":
+    elif enemy_type == EnemyTypes.SOLDIER:
       stats = Stats(hp=60, attack=8, defense=5)
       return Enemy(name="Soldier", stats=stats, io_bus=io_bus, attack_strategy=attack_strategy)
-    elif enemy_type == "skeleton":
+    elif enemy_type == EnemyTypes.SKELETON:
       stats = Stats(hp=30, attack=10, defense=2)
       return Enemy(name="Skeleton", stats=stats, io_bus=io_bus, attack_strategy=attack_strategy)
+    elif enemy_type == EnemyTypes.DRAGON:
+      stats = Stats(hp=80, attack=20, defense=10)
+      return Enemy(name="Dragon", stats=stats, io_bus=io_bus, attack_strategy=attack_strategy)
     else:
       raise ValueError(f"Unknown enemy type: {enemy_type}")
-
-# ============= state pattern ================
-
-class IGameState(ABC):
-  @abstractmethod
-  def run(self) -> IGameState | None:
-    """ run each state logic, return the next state or None to quit """
-    pass
-
-# ============= game states ================
-
-class MainMenuState(IGameState):
-  def __init__(self, io_bus: EventBus, io: ConsoleIOManager):
-    self.io_bus = io_bus
-    self.io = io
-
-  def run(self) -> IGameState | None:
-    """ render main menu, get input and handle choice """
-
-    # render main menu
-    self.io.outDevice.write("\n ==== MAIN MENU ====\n")
-    self.io.outDevice.write("1. New Game\n")
-    self.io.outDevice.write("2. Exit\n")
-
-    # pick and option
-    choice = self.io.inDevice.read("choose and option: \n")
-
-    if choice == '1': #start a new game
-      return CharacterCreationState(io_bus=self.io_bus, io=self.io)
-    elif choice == '2': # exit the game
-      self.io.outDevice.write("Goodbye!")
-      return None
-    else:
-      self.io.outDevice.write("invalid choice, try again!")
-      return self # returns MainMenuState again
-
-# ============= character creation state ================
-
-class CharacterCreationState(IGameState):
-  def __init__(self, io_bus: EventBus, io: ConsoleIOManager) -> None:
-    super().__init__()
-
-    self.io_bus = io_bus
-    self.io = io
-
-  def run(self) -> IGameState:
-    """ get user input and create character  """
-    # input character name
-    name = self.io.inDevice.read("Enter your character's name: \n")
-
-    attack_strategy = BasicAttackStrategy()
-    player = CharacterFactory.create_player(
-      name,
-      io_bus=self.io_bus,
-      attack_strategy=attack_strategy,
-    )
-
-    enemy_type = random.choice(list(VALID_ENEMIES))
-    enemy = CharacterFactory.create_enemy(
-      enemy_type=enemy_type,
-      io_bus=self.io_bus,
-      attack_strategy=attack_strategy,
-    )
-
-    # after character => return a new game state
-    return PlayState(
-      io_bus = self.io_bus,
-      io = self.io,
-      player = player,
-      enemy = enemy,
-    )
-
-# ============= new game state ================
-
-class PlayState(IGameState):
-  def __init__(
-    self,
-    io_bus: EventBus,
-    io : ConsoleIOManager,
-    player: Character,
-    enemy: Character,
-  ) -> None:
-    super().__init__()
-
-    self.io_bus = io_bus
-    self.io = io
-    self.player = player
-    self.enemy = enemy
-
-  def run(self) -> IGameState | None:
-    """ run a new game and when done -> back to main menu """
-    game = TurnBasedGame(
-      player=self.player,
-      enemy = self.enemy,
-      io_bus = self.io_bus,
-    )
-
-    game.start()
-
-    # after game over => return to main menu
-    self.io.outDevice.write("Game over! back to main menu...")
-    return MainMenuState(
-      io_bus=self.io_bus,
-      io = self.io,
-    )
 
 
 # ============= Game ================
@@ -433,7 +337,158 @@ class TurnBasedGame(Game):
     """ enemy's turn logic """
     self.enemy.attack_target(target=self.player)
 
-# ============= character ================
+# ============= game context ================
+
+class GameContext:
+  """ game state manager """
+
+  def __init__(
+      self,
+      io_bus: EventBus,
+      io: ConsoleIOManager,
+  ):
+    self.io_bus = io_bus
+    self.io = io
+    self.player: Optional[Player] = None
+    self.enemy: Optional[Enemy] = None
+    
+    # instance of our game -> later: can pause and resume
+    self.turn_based_game: Optional[TurnBasedGame] = None
+    # current game state, eg: MainMenu or PlayingGame ....
+    self.state: Optional[IGameState] = None
+
+    # game outcome
+    self.outcome: Optional[Literal['win', 'lose'] | None] = None
+
+  def set_state(self, state: IGameState | None) -> None:
+    """ set current game state """
+    self.state = state
+
+  def run(self) -> None:
+    """ state loop, run as long as state not None -> exitGameState """
+    while self.state is not None:
+      # run what ever that is ->current state eg: mainMenu etc...
+      self.state.run(context=self) # each state.run gets context
+
+# ============= state pattern ================
+
+class IGameState(ABC):
+  @abstractmethod
+  def run(self, context: GameContext) -> None:
+    """ run each state logic """
+    pass
+
+# ============= game states ================
+
+class MainMenuState(IGameState):
+
+  def run(self, context: GameContext) -> None:
+    """ render main menu, get input and handle choice """
+
+    # render main menu
+    context.io.outDevice.write("\n ==== MAIN MENU ====\n")
+    context.io.outDevice.write("1. New Game\n")
+    context.io.outDevice.write("2. Exit\n")
+
+    # pick and option
+    choice = context.io.inDevice.read("choose and option: \n")
+
+    if choice == '1': #start a new game
+      context.set_state(CharacterCreationState())
+    elif choice == '2': # exit the game
+      context.set_state(ExitGameState())
+    else:
+      context.io.outDevice.write("invalid choice, try again!")
+      context.set_state(state=self)# sets MainMenuState again
+
+# ============= character creation state ================
+
+class CharacterCreationState(IGameState):
+
+  def run(self, context: GameContext) -> None:
+    """ get user input and create character  """
+    # input character name
+    name = context.io.inDevice.read("Enter your character's name: \n")
+
+    attack_strategy = BasicAttackStrategy()
+    # store the player in global context
+    context.player = CharacterFactory.create_player(
+      name,
+      io_bus=context.io_bus,
+      attack_strategy=attack_strategy,
+    )
+
+    enemy_type = random.choice(list(EnemyTypes))
+    
+    context.enemy = CharacterFactory.create_enemy(
+      enemy_type=enemy_type,
+      io_bus=context.io_bus,
+      attack_strategy=attack_strategy,
+    )
+
+    # create TurnBasedGame once, store it in context - make:(New Game)
+    context.turn_based_game = TurnBasedGame(
+      player=context.player,
+      enemy=context.enemy,
+      io_bus=context.io_bus,
+    )
+
+    # set the state to new game
+    context.set_state(PlayState())
+
+# ============= new game state ================
+
+class PlayState(IGameState):
+
+  def run(self, context: GameContext) -> None:
+    """ run a new game """
+    
+    # start a new game
+    if context.turn_based_game is not None:
+      context.turn_based_game.start()
+    else:
+      context.io.outDevice.write("Error: No game instance found. Returning to main menu.")
+      context.set_state(MainMenuState())
+
+    # out of game loop------------here---------------out
+    if context.player is not None and context.player.is_alive:
+      context.outcome = 'win'
+    else: #dead
+      context.outcome = 'lose'
+
+    # win or dead => game over
+    context.set_state(GameOverState())
+
+# ============= Game over state ================
+
+class GameOverState(IGameState):
+  def run(self, context: GameContext) -> None:
+    context.io.outDevice.write("\n ==== Game Over ==== \n")
+
+    if context.outcome == 'win':
+      context.io.outDevice.write('\n🌟 You won! 🌟\n')
+    elif context.outcome == 'lose':
+      context.io.outDevice.write('\n💀 You lose! 💀\n')
+
+    context.io.outDevice.write("\n 1. back to main menu \n")
+    context.io.outDevice.write("\n 2. Exit \n")
+    
+    choice = context.io.inDevice.read("choose: > \n")
+
+    if choice == '1':
+      context.set_state(MainMenuState())
+    else: 
+      context.set_state(ExitGameState())
+
+
+# ============= Exit game state ================
+
+class ExitGameState(IGameState):
+  def run(self, context: GameContext) -> None:
+    context.io.outDevice.write("Goodbye! \n")
+    # set the state to None => to exit the Main loop
+    context.set_state(None)
+  
 # ============= character ================
 # ============= character ================
 # ============= character ================
@@ -458,15 +513,17 @@ def main():
   # io observer subscribes to io bus
   io_bus.subscribe(io_observer)
 
-  # state machine loop
-  state: IGameState | None = MainMenuState(
-    io_bus=io_bus,
-    io= console_io,
+  # context manager
+  context: GameContext = GameContext(
+    io=console_io,
+    io_bus=io_bus
   )
 
-  # only exit_game.run() returns => None 
-  while state is not None:
-    state = state.run()
+  # set the init state
+  context.set_state(MainMenuState())
+
+  # start the Main loop => this is the state loop that controls the menus
+  context.run()
 
 # entry point of my app
 if __name__ == "__main__":
