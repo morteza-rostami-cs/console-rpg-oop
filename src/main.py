@@ -1,3 +1,6 @@
+# forward references are auto resolved
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 import random
 #from types import SimpleNamespace
@@ -5,7 +8,10 @@ from typing import Protocol, Any, Dict, List
 from enum import Enum
 from dataclasses import dataclass
 
+
 # =============  event types ================
+
+VALID_ENEMIES = {"goblin", "soldier", "skeleton"}
 
 @dataclass
 class AttackStartedEvent:
@@ -276,6 +282,111 @@ class CharacterFactory:
     else:
       raise ValueError(f"Unknown enemy type: {enemy_type}")
 
+# ============= state pattern ================
+
+class IGameState(ABC):
+  @abstractmethod
+  def run(self) -> IGameState | None:
+    """ run each state logic, return the next state or None to quit """
+    pass
+
+# ============= game states ================
+
+class MainMenuState(IGameState):
+  def __init__(self, io_bus: EventBus, io: ConsoleIOManager):
+    self.io_bus = io_bus
+    self.io = io
+
+  def run(self) -> IGameState | None:
+    """ render main menu, get input and handle choice """
+
+    # render main menu
+    self.io.outDevice.write("\n ==== MAIN MENU ====\n")
+    self.io.outDevice.write("1. New Game\n")
+    self.io.outDevice.write("2. Exit\n")
+
+    # pick and option
+    choice = self.io.inDevice.read("choose and option: \n")
+
+    if choice == '1': #start a new game
+      return CharacterCreationState(io_bus=self.io_bus, io=self.io)
+    elif choice == '2': # exit the game
+      self.io.outDevice.write("Goodbye!")
+      return None
+    else:
+      self.io.outDevice.write("invalid choice, try again!")
+      return self # returns MainMenuState again
+
+# ============= character creation state ================
+
+class CharacterCreationState(IGameState):
+  def __init__(self, io_bus: EventBus, io: ConsoleIOManager) -> None:
+    super().__init__()
+
+    self.io_bus = io_bus
+    self.io = io
+
+  def run(self) -> IGameState:
+    """ get user input and create character  """
+    # input character name
+    name = self.io.inDevice.read("Enter your character's name: \n")
+
+    attack_strategy = BasicAttackStrategy()
+    player = CharacterFactory.create_player(
+      name,
+      io_bus=self.io_bus,
+      attack_strategy=attack_strategy,
+    )
+
+    enemy_type = random.choice(list(VALID_ENEMIES))
+    enemy = CharacterFactory.create_enemy(
+      enemy_type=enemy_type,
+      io_bus=self.io_bus,
+      attack_strategy=attack_strategy,
+    )
+
+    # after character => return a new game state
+    return PlayState(
+      io_bus = self.io_bus,
+      io = self.io,
+      player = player,
+      enemy = enemy,
+    )
+
+# ============= new game state ================
+
+class PlayState(IGameState):
+  def __init__(
+    self,
+    io_bus: EventBus,
+    io : ConsoleIOManager,
+    player: Character,
+    enemy: Character,
+  ) -> None:
+    super().__init__()
+
+    self.io_bus = io_bus
+    self.io = io
+    self.player = player
+    self.enemy = enemy
+
+  def run(self) -> IGameState | None:
+    """ run a new game and when done -> back to main menu """
+    game = TurnBasedGame(
+      player=self.player,
+      enemy = self.enemy,
+      io_bus = self.io_bus,
+    )
+
+    game.start()
+
+    # after game over => return to main menu
+    self.io.outDevice.write("Game over! back to main menu...")
+    return MainMenuState(
+      io_bus=self.io_bus,
+      io = self.io,
+    )
+
 
 # ============= Game ================
 
@@ -333,11 +444,13 @@ def main():
   io_bus = EventBus()
 
   # print/input to console
-  inDevice = ConsoleIn()
-  outDevice = ConsoleOut()
+  inDevice, outDevice = ConsoleIn(), ConsoleOut()
 
   # console io manager
-  console_io = ConsoleIOManager(inDevice=inDevice, outDevice=outDevice)
+  console_io = ConsoleIOManager(
+    inDevice=inDevice, 
+    outDevice=outDevice
+  )
   
   # io observer
   io_observer = IOObserver(console_io=console_io)
@@ -345,30 +458,16 @@ def main():
   # io observer subscribes to io bus
   io_bus.subscribe(io_observer)
 
-  # attack strategy
-  attack_strategy = BasicAttackStrategy()
-
-  # create a player and enemy
-  player = CharacterFactory.create_player(
-    name="ali",
-    attack_strategy=attack_strategy,
+  # state machine loop
+  state: IGameState | None = MainMenuState(
     io_bus=io_bus,
-  )
-  
-  enemy = CharacterFactory.create_enemy(
-    enemy_type="goblin",
-    attack_strategy=attack_strategy,
-    io_bus=io_bus,
+    io= console_io,
   )
 
-  game = TurnBasedGame(
-    player=player,
-    enemy=enemy,
-    io_bus=io_bus,
-  )
+  # only exit_game.run() returns => None 
+  while state is not None:
+    state = state.run()
 
-  game.start()
-
-
+# entry point of my app
 if __name__ == "__main__":
   main()
