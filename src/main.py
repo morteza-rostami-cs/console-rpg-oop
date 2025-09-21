@@ -1,604 +1,386 @@
-# forward references are auto resolved
-from __future__ import annotations
+from __future__ import annotations # class imports fix
+"""
+# text-based RPG Game: Survive The Dick Land
 
-from abc import ABC, abstractmethod
+"""
+
 import random
-#from types import SimpleNamespace
-from typing import Protocol, Any, Dict, List, Optional, Literal
-from enum import Enum
+import json
+from abc import ABC, abstractmethod
+from typing import Literal, TypedDict, Any, Optional
 from dataclasses import dataclass
+import time
+import uuid
+import tkinter as tk
+import tkinter.simpledialog as simpledialog
+from enum import Enum
 
+#============= tkinter ui ================
 
-# =============  event types ================
+class UI:
+  """ wrapper around tkinter """
 
-# VALID_ENEMIES = {"goblin", "soldier", "skeleton"}
+  def __init__(self, root: tk.Tk, context: GameContext) -> None:
+    # needs context ->to handle input
+    self.context = context
+
+    self.root = root #tkinter root
+
+    self.text_area = tk.Text(root, height=30, width=90, state='disabled')
+    self.text_area.pack(pady=10)
+
+    # text-input 
+    self.entry = tk.Entry(root, width=100)
+    self.entry.pack(pady=5)
+    self.entry.bind("<Return>", self.on_submit)
+
+    # some buttons
+    self.button_frame = tk.Frame(root)
+    self.button_frame.pack(pady=10)
+
+  def read(self, prompt: str) -> str:
+    name = simpledialog.askstring(title="Character Creation", prompt=prompt, parent=self.root)
+
+    if name:
+      return name
+    return 'no input!'
+
+  def close(self) -> None:
+    """ close tkinter """
+    self.root.after(ms=1000, func=self.root.destroy)
+
+  def display(self, message: str) -> None:
+    """ display a message to screen """
+    
+    self.text_area.config(state='normal')
+    self.text_area.insert(tk.END, message + '\n')
+    self.text_area.see(tk.END)
+    self.text_area.config(state="disabled")
+
+  def on_submit(self, event: Any) -> None: 
+    """ capture ui events """
+    user_input = self.entry.get()
+    self.entry.delete(0, tk.END)
+
+    # handle ui input -> in state.handler_input
+    self.context.handle_input(user_input.strip().lower())
+  
+  def clear_buttons(self) ->None:
+    """ clear buttons """
+    for widget in self.button_frame.winfo_children():
+      widget.destroy()
+
+  def add_button(self, text: str, command: Any) -> None:
+    """ add a button with text=button_text, command=callback"""
+    button = tk.Button(self.button_frame, text=text, command=command, width=20)
+    button.pack(pady=5)
+
+#============= stats ================
+
+@dataclass
+class Stats:
+  """ encapsulates character stats """
+  max_hp: int # maximum health
+  attack: int
+  defense: int
+  current_hp: int | None = None
+
+  # __init__ is auto generated
+
+  def __post_init__(self):
+    # if current_hp not set ->set it to max_hp
+    if self.current_hp is None:
+      self.current_hp = self.max_hp
+
+  def is_alive(self) -> bool:
+    """ check if player alive """
+    if not self.current_hp:
+      raise ValueError("self.current_hp is None")
+
+    return self.current_hp > 0
+
+  def is_dead(self) -> bool:
+    """ check if player is dead """
+    if not self.current_hp:
+      raise ValueError("self.current_hp is None")
+    
+    return self.current_hp <= 0
+
+  def take_damage(self, dmg: int) -> int:
+    """ apply damage after defense mitigation """
+
+    if not self.current_hp: raise ValueError("no self.current_hp")
+
+    net_damage = max(0, dmg - self.defense)
+    # apply damage to hp
+    self.current_hp = max(0, self.current_hp - net_damage)
+    
+    return net_damage
+  
+  def heal(self, amount: int) -> None:
+    """ heal but not exceed max_hp """
+    if not self.current_hp: raise ValueError("no self.current_hp") 
+
+    self.current_hp = min(self.max_hp, self.current_hp + amount)
+
+#============= enemy types ================
 
 class EnemyTypes(Enum):
   GOBLIN = 'goblin'
-  SOLDIER = 'soldier'
   SKELETON = 'skeleton'
-  DRAGON = 'dragon'
+  ORC = 'orc'
 
-@dataclass
-class AttackStartedEvent:
-  attacker: str
-  target: str
-
-@dataclass
-class DamageTakenEvent:
-  name: str
-  damage: int
-  remaining_hp: int
-
-@dataclass
-class CharacterDiedEvent:
-  name: str
-
-@dataclass 
-class WelcomeEvent:
-  game_name: str
-
-@dataclass
-class RunAttemptEvent:
-  name: str
-
-@dataclass
-class RunSuccessEvent:
-  name: str
-
-@dataclass 
-class RunFailedEvent:
-  name: str
-
-# =============  observer pattern ================
-
-class Observer(Protocol):
-  @abstractmethod
-  def notify(self, event: Any) -> None: pass
-
-class EventBus:
-  def __init__(self) -> None:
-    self._subscribers: list[Observer] = []
-
-  def subscribe(self, observer: Observer) -> None:
-    self._subscribers.append(observer)
-
-  def publish(self, event: Any) -> None:
-    for sub in self._subscribers:
-      sub.notify(event=event)
-
-# =============  ui ================
-
-class IInput(ABC):
-  @abstractmethod
-  def read(self, prompt: str) -> str:
-    pass
-
-class IOutput(ABC):
-  @abstractmethod
-  def write(self, text: str) -> None:
-    pass
-
-# ============= concrete terminal ui ================
-
-class ConsoleIn(IInput):
-  def read(self, prompt: str) -> str:
-    return input(prompt).strip().lower()
-
-class ConsoleOut(IOutput):
-  def write(self, text: str) -> None:
-    print(text)
-
-# ============= all input and output to terminal ================
-
-class ConsoleIOManager:
-  """ all input/output messages here """
-  def __init__(self, inDevice: IInput, outDevice: IOutput) -> None:
-    self.inDevice = inDevice
-    self.outDevice = outDevice
-
-  def welcome_message(self, data: WelcomeEvent) -> None:
-    self.outDevice.write("\n=========================\n")
-    self.outDevice.write(f"Welcome to {data.game_name} Game \n")
-    self.outDevice.write("\n=========================\n")
-
-  def take_damage_message(self, data: DamageTakenEvent) -> None:
-    """ character takes damage """
-    self.outDevice.write(f"{data.name} took {data.damage} damage. remaining HP: {data.remaining_hp}")
-
-  def attack_message(self, data: AttackStartedEvent) -> None:
-    self.outDevice.write(f"{data.attacker} attacks: {data.target}")
-
-  def character_died_message(self, data: CharacterDiedEvent) -> None:
-    self.outDevice.write(f"{data.name} has died!")
-
-  def run_attempt_message(self, data: RunAttemptEvent) -> None:
-    self.outDevice.write(f"{data.name} attempts to run away...")
-
-  def run_success_message(self, data: RunSuccessEvent) -> None:
-    self.outDevice.write(f"{data.name} successfully ran away!")
-
-  def run_failed_message(self, data: RunFailedEvent) -> None:
-    self.outDevice.write(f"{data.name} failed to escape and is vulnerable!")
-
-# =============  concrete: console io observer ================
-
-class IOObserver(Observer):
-
-  def __init__(self, console_io: ConsoleIOManager) -> None:
-    self.console = console_io
-
-  def notify(self, event: Any) -> None:
-    
-    if isinstance(event, AttackStartedEvent):
-      self.console.attack_message(event)
-    elif isinstance(event, DamageTakenEvent):
-      self.console.take_damage_message(event)
-    elif isinstance(event, CharacterDiedEvent):
-      self.console.character_died_message(event)
-
-    elif isinstance(event, WelcomeEvent):
-      self.console.welcome_message(data=event)
-
-    # NEW handlers for run/flee events
-    elif isinstance(event, RunAttemptEvent):
-      self.console.run_attempt_message(event)
-    elif isinstance(event, RunSuccessEvent):
-      self.console.run_success_message(event)
-    elif isinstance(event, RunFailedEvent):
-      self.console.run_failed_message(event)
-
-# ============= character attack strategies ================
-
-# multiple algorithms for calc attack damage, so we use strategy pattern 
-class IAttackStrategy(Protocol):
-  @abstractmethod
-  def calculate_damage(self, base_attack: int) -> int:
-    """ algorithm for calculating attack damage """
-    pass
-
-class BasicAttackStrategy(IAttackStrategy):
-  def calculate_damage(self, base_attack: int) -> int:
-    """ add some basic randomness to attack power """ 
-    return base_attack + random.randint(-2, 2)
-
-# ============= character ================
+#============= character ================
 
 class Character(ABC):
-  """ abstract base class for all characters in the Game """
+  """ abstract base class for all characters """
 
-  def __init__(
-    self, 
-    name: str, 
-    stats: 'Stats', 
-    io_bus: EventBus,
-    attack_strategy: IAttackStrategy,
-  ) -> None:
+  def __init__(self, name: str, stats: Stats) -> None:
     self.name = name
     self.stats = stats
-    self.attack_strategy = attack_strategy
 
-    # io events 
-    self.io_bus = io_bus
-
-  @property
-  def is_alive(self) -> bool:
-    """ check hp, if player alive """
-    return self.stats.is_alive()
-  
-  @property
-  def is_dead(self) -> bool:
-    """ check if the player is dead, True """
-    return self.stats.is_dead()
-
-  def take_damage(self, amount: int) -> None:
-    """ reduce HP after defense mitigation """
-    damage = max(0, amount - self.stats.defense) # can't be less than 0
-    self.stats.hp = self.stats.hp - damage
-
-    #  🔔
-    damage_event = DamageTakenEvent(
-      damage=damage,
-      name=self.name,
-      remaining_hp=self.stats.hp
-    )
-    self.io_bus.publish(event=damage_event)
-
-    # check if character is dead
-    if self.stats.is_dead():
-      # dead
-      self.io_bus.publish(event=CharacterDiedEvent(name=self.name))
-    
-  #@abstractmethod
-  def attack_target(self, target: 'Character') -> None:
-    """ player can attack """
-
-    # check if player is dead should not be able to attack
-    if not self.is_alive: return
-
-    attack_event = AttackStartedEvent(
-      attacker=self.name, 
-      target=target.name
-    )
-    self.io_bus.publish(event=attack_event)
-
-    # using some algo to give some randomness to attacks
-    damage_amount = self.attack_strategy.calculate_damage(base_attack=self.stats.attack)
-
-    # target takes damage
-    target.take_damage(amount=damage_amount)
-
-# ============= stats ================
-
-class Stats:
-  def __init__(
-      self,
-      hp: int,
-      attack: int,
-      defense: int
-  ) -> None:
-    self.__hp = hp
-    self.__attack = attack
-    self.__defense = defense
-
-  @property
-  def hp(self) -> int: return self.__hp
-
-  @hp.setter
-  def hp(self, value: int) -> None:
-    # check if value not smaller then zero
-    if value < 0:
-      self.__hp = 0
-    else:
-      self.__hp = value
-
-  @property
-  def attack(self) -> int: return self.__attack
-
-  @attack.setter
-  def attack(self, value: int) -> None:
-    if value < 0:
-      raise ValueError("attack must be non-negative")
-
-    self.__attack = value
-
-  @property
-  def defense(self) -> int: return self.__defense
-
-  @defense.setter
-  def defense(self, value: int) -> None:
-    if value < 0:
-      raise ValueError('Defense must be non-negative')
-    
-    self.__defense = value
-
-  # methods
-  def is_dead(self) -> bool:
-    """ if: dead, return True """
-    return self.__hp <= 0
-
-  def is_alive(self) -> bool:
-    """ if: alive , return True """
-    return self.__hp > 0
-
-    
-
-# ============= Player ================
-
-class Player(Character):
-  def __init__(self, name: str, stats: Stats, io_bus: EventBus, attack_strategy: IAttackStrategy) -> None:
-    super().__init__(name, stats, io_bus, attack_strategy=attack_strategy)
-
-# ============= Enemy ================
-
-class Enemy(Character):
-  def __init__(self, name: str, stats: Stats, io_bus: EventBus, attack_strategy: IAttackStrategy) -> None:
-    super().__init__(name, stats, io_bus, attack_strategy=attack_strategy)
-
-# ============= character factory ================
-
-class CharacterFactory:
-  @staticmethod
-  def create_player(name: str, io_bus: EventBus, attack_strategy: IAttackStrategy) -> Player:
-    """ Factory method for creating players """
-    stats = Stats(hp=100, attack=10, defense=5)
-    return Player(name=name, stats=stats, io_bus=io_bus, attack_strategy=attack_strategy)
-  
-  @staticmethod
-  def create_enemy(enemy_type: EnemyTypes, io_bus: EventBus, attack_strategy: IAttackStrategy) -> Enemy:
-    """ Factory method for creating enemies """
-    if enemy_type == EnemyTypes.GOBLIN:
-      stats = Stats(hp=40, attack=6, defense=3)
-      return Enemy(name="Goblin", stats=stats, io_bus=io_bus, attack_strategy=attack_strategy)
-    elif enemy_type == EnemyTypes.SOLDIER:
-      stats = Stats(hp=60, attack=8, defense=5)
-      return Enemy(name="Soldier", stats=stats, io_bus=io_bus, attack_strategy=attack_strategy)
-    elif enemy_type == EnemyTypes.SKELETON:
-      stats = Stats(hp=30, attack=10, defense=2)
-      return Enemy(name="Skeleton", stats=stats, io_bus=io_bus, attack_strategy=attack_strategy)
-    elif enemy_type == EnemyTypes.DRAGON:
-      stats = Stats(hp=80, attack=20, defense=10)
-      return Enemy(name="Dragon", stats=stats, io_bus=io_bus, attack_strategy=attack_strategy)
-    else:
-      raise ValueError(f"Unknown enemy type: {enemy_type}")
-
-
-# ============= Game ================
-
-class Game(ABC):
-  def __init__(
-    self,
-    player: Player,
-    enemy: Enemy,
-    io_bus: EventBus,
-  ) -> None:
-    self.player = player
-    self.enemy = enemy
-    self.io_bus = io_bus
-
-# ============= turn-based game logic ================
-
-class TurnBasedGame(Game):
-  """ class without constructor, uses the parent constructor auto """
-
-  def player_turn(self) -> None:
-    """ player's turn logic """
-    self.player.attack_target(target=self.enemy)
-
-  def enemy_turn(self) -> None:
-    """ enemy's turn logic """
-    self.enemy.attack_target(target=self.player)
-
-# ============= game context ================
-
-class GameContext:
-  """ game state manager """
-
-  def __init__(
-      self,
-      io_bus: EventBus,
-      io: ConsoleIOManager,
-  ):
-    self.io_bus = io_bus
-    self.io = io
-    
-    # instance of our game -> later: can pause and resume
-    self.new_game: Optional[TurnBasedGame] = None
-    # current game state, eg: MainMenu or PlayingGame ....
-    self.state: Optional[IGameState] = None
-
-    # game outcome
-    self.outcome: Optional[Literal['win', 'lose'] | None] = None
-
-    # combat rounds
-    self.combat_rounds = 0
-
-  def set_state(self, state: IGameState | None) -> None:
-    """ set current game state """
-    self.state = state
-
-  def run(self) -> None:
-    """ state loop, run as long as state not None -> exitGameState """
-    while self.state is not None:
-      # run what ever that is ->current state eg: mainMenu etc...
-      self.state.run(context=self) # each state.run gets context
-
-# ============= state pattern ================
-
-class IGameState(ABC):
   @abstractmethod
-  def run(self, context: GameContext) -> None:
-    """ run each state logic """
+  def attack_target(self, target: Character) -> int:
+    """ perform an attack on the target , return damage dealt. """
     pass
 
-# ============= game states ================
+  def is_alive(self) -> bool:
+    return self.stats.is_alive()
+  
+  def is_dead(self) -> bool:
+    return self.stats.is_dead()
+
+#============= player ================
+
+class Player(Character):
+  """ the main player """
+
+  def __init__(self, name: str, stats: Stats) -> None:
+    super().__init__(name, stats)
+    self.inventory: list[str] = []
+
+  def attack_target(self, target: Character) -> int:
+    # adding some randomness to our attack
+    base_damage = self.stats.attack + random.randint(0, 2)
+
+    dealt = target.stats.take_damage(dmg=base_damage)
+    return dealt
+
+#============= enemy ================
+
+class Enemy(Character):
+  """ Enemy character with ai """
+
+  def __init__(self, name: str, stats: Stats) -> None:
+    super().__init__(name, stats)
+
+  def attack_target(self, target: Character) -> int:
+    # some randomness to the enemy damage
+    base_damage = self.stats.attack + random.randint(-1, 2)
+    # apply the damage
+    dealt = target.stats.take_damage(dmg=base_damage)
+    return dealt
+
+#============= enemy factory ================
+
+class EnemyFactory:
+  """ factory for creating enemies """
+
+  @staticmethod
+  def create_enemy(enemy_type: EnemyTypes) -> Enemy:
+    if enemy_type == EnemyTypes.GOBLIN:
+      return Enemy("Goblin", Stats(max_hp=20, attack=5, defense=1))
+    elif enemy_type == EnemyTypes.SKELETON:
+      return Enemy("Skeleton", Stats(max_hp=25, attack=6, defense=2))
+    elif enemy_type == EnemyTypes.ORC:
+      return Enemy("Orc", Stats(max_hp=30, attack=8, defense=3))
+    else: 
+      raise ValueError(f"unknown enemy type: {enemy_type}")
+
+
+#============= game state ================
+
+class IGameState(ABC):
+  """ interface for all game states """
+
+  @abstractmethod
+  def enter(self, context: GameContext) -> None:
+    """ runs when entering the state, eg: render initial message """
+    pass
+
+  @abstractmethod
+  def handle_input(self, context: GameContext, user_input: str) -> None:
+    """ pass any input and run each state logic """
+    pass
+
+#============= welcome screen state ================
+
+class WelcomeState(IGameState):
+  """ welcome screen of the game """
+
+  def enter(self, context: GameContext):
+    
+    # render welcome screen
+    context.ui.display("🌟 Welcome to the RPG Game! 🌟\nPress ENTER to continue...")
+    # clear buttons
+    context.ui.clear_buttons()
+
+  def handle_input(self, context: GameContext, user_input: str) -> None:
+    if user_input == "": # user pressed Enter
+      context.ui.display("👉 game continues from here!")
+      # main menu
+      context.set_state(state=MainMenuState())
+    else:
+      context.ui.display("❌ Invalid input, please press Enter...")
+
+#============= main menu ================
 
 class MainMenuState(IGameState):
+  def enter(self, context: GameContext) -> None:
+    context.ui.display("====== Main Menu ======")
+    context.ui.display("choose an option \n")
 
-  def run(self, context: GameContext) -> None:
-    """ render main menu, get input and handle choice """
+    # clear buttons
+    context.ui.clear_buttons()
 
-    # render main menu
-    context.io.outDevice.write("\n ==== MAIN MENU ====\n")
-    context.io.outDevice.write("1. New Game\n")
-    context.io.outDevice.write("2. Exit\n")
+    # set the buttons -> menu options
+    context.ui.add_button("🆕 New Game", lambda: context.set_state(state=CharacterCreationState()))
+    context.ui.add_button("🚪 Exit Game", lambda: context.set_state(state=ExitGameState()))
 
-    # pick and option
-    choice = context.io.inDevice.read("choose and option: \n")
+  def handle_input(self, context: GameContext, user_input:str) -> None:
+    """ not used: cause we are passing a call back to out button """
+    pass
 
-    if choice == '1': #start a new game
-      context.set_state(CharacterCreationState())
-    elif choice == '2': # exit the game
-      context.set_state(ExitGameState())
-    else:
-      context.io.outDevice.write("invalid choice, try again!")
-      context.set_state(state=self)# sets MainMenuState again
-
-# ============= character creation state ================
+#============= character-creation state ================
 
 class CharacterCreationState(IGameState):
+  def enter(self, context: GameContext) -> None:
+    """ create player """
 
-  def run(self, context: GameContext) -> None:
-    """ get user input and create character  """
-    # input character name
-    name = context.io.inDevice.read("Enter your character's name: \n")
+    name = context.ui.read(prompt="Enter your name: \n")
+    context.ui.display(message=f"Player name: {name}")
 
-    # if not context.new_game:
-    #   raise Exception("characterCreationState: no new_game")
-
-    attack_strategy = BasicAttackStrategy()
-    # store the player in global context
-    player = CharacterFactory.create_player(
-      name,
-      io_bus=context.io_bus,
-      attack_strategy=attack_strategy,
+    # create a new player
+    context.player = Player(
+      name=name,
+      stats= Stats(max_hp=100, attack=10, defense=9)
     )
 
-    enemy_type = random.choice(list(EnemyTypes))
-    
-    enemy = CharacterFactory.create_enemy(
-      enemy_type=enemy_type,
-      io_bus=context.io_bus,
-      attack_strategy=attack_strategy,
-    )
+    context.set_state(state=NewGameState())
 
-    # create TurnBasedGame once, store it in context - make:(New Game)
-    context.new_game = TurnBasedGame(
-      player=player,
-      enemy=enemy,
-      io_bus=context.io_bus,
-    )
+  def handle_input(self, context: GameContext, user_input: str) -> None:
+    return super().handle_input(context, user_input)
 
-    # set the state to new game
-    context.set_state(PlayState())
+#============= new game state ================
 
-# ============= new game state ================
+class NewGameState(IGameState):
+  def enter(self, context: GameContext) -> None:
 
-class PlayState(IGameState):
+    # create a random enemy
+    enemy_types = list(EnemyTypes)
+    print(enemy_types)
 
-  def run(self, context: GameContext) -> None:
-    """ run a new game """
-    
-    # some check if objects exist
-    if context.new_game is None:
-      context.io.outDevice.write("Error: No game instance found. Returning to main menu.")
-      context.set_state(MainMenuState())
-      return
+    enemy_type = random.choice(enemy_types)
+    enemy = EnemyFactory.create_enemy(enemy_type=enemy_type)
 
-    player = context.new_game.player
-    enemy = context.new_game.enemy
-    bus = context.io_bus
-    io = context.io
+    context.ui.display(f"⚔️ starting a new adventure... {context.player and context.player.name} - enemy: {enemy.name}")
+    context.ui.clear_buttons()
+    context.ui.add_button(text="Back to Menu", command=lambda: context.set_state(MainMenuState()))
+    context.ui.display("\n=================\n")
 
-    # main combat loop: until someone dies or player flees
-    while context.new_game.player.is_alive and context.new_game.enemy.is_alive:
+  def handle_input(self, context: GameContext, user_input:str) -> None:
+    """ not used: cause we are passing a call back to out button """
+    pass
 
-      # print some info
-      io.outDevice.write(f"\n== Round: {context.combat_rounds + 1} ==\n")
-      io.outDevice.write(f"{player.name}: {player.stats.hp} HP | {enemy.name}: {enemy.stats.hp} HP")
-
-      # present choices
-      io.outDevice.write("Choose action: \n")
-      io.outDevice.write("1) Attack \n")
-      io.outDevice.write("2) Run \n")
-
-      io.outDevice.write('your choice (1/2)\n')
-      choice = io.inDevice.read("> ")
-
-      if choice in {'1', 'attack', 'a'}:
-        # player attacks 
-        context.new_game.player_turn()
-
-        # if: enemy is alive
-        context.new_game.enemy_turn()
-      
-      elif choice in {'2', 'run', 'r'}:
-
-        # player flee attempt event
-        bus.publish(RunAttemptEvent(name=player.name))
-
-        # flee chance 50%
-        flee_chance = 0.5
-
-        if random.random() < flee_chance:
-          # player flee success
-          bus.publish(RunSuccessEvent(name=player.name))
-
-          # for new just go back to main menu
-          context.set_state(MainMenuState())
-          return
-
-        else: # flee 50% fails
-          bus.publish(RunFailedEvent(name=player.name))
-          # flee fails -> enemy attacks
-          context.new_game.enemy_turn()
-
-          # if player died because of free hit, break
-          if player.is_dead:
-            break
-
-      else: # wrong input
-        io.outDevice.write("Invalid choice, please choose 1 or 2.") 
-        continue # same round -> try correct input
-      
-      # next round
-      context.combat_rounds += 1
-
-    # out of game loop------------here---------------out
-    if context.new_game.player.is_alive:
-      context.outcome = 'win'
-    else: #dead
-      context.outcome = 'lose'
-
-    # win or dead => game over
-    context.set_state(GameOverState())
-
-# ============= Game over state ================
-
-class GameOverState(IGameState):
-  def run(self, context: GameContext) -> None:
-    context.io.outDevice.write("\n ==== Game Over ==== \n")
-
-    if context.outcome == 'win':
-      context.io.outDevice.write('\n🌟 You won! 🌟\n')
-    elif context.outcome == 'lose':
-      context.io.outDevice.write('\n💀 You lose! 💀\n')
-
-    context.io.outDevice.write("\n 1. back to main menu \n")
-    context.io.outDevice.write("\n 2. Exit \n")
-    
-    choice = context.io.inDevice.read("choose: > \n")
-
-    if choice == '1':
-      context.set_state(MainMenuState())
-    else: 
-      context.set_state(ExitGameState())
-
-
-# ============= Exit game state ================
+#============= Exit game state ================
 
 class ExitGameState(IGameState):
-  def run(self, context: GameContext) -> None:
-    context.io.outDevice.write("Goodbye! \n")
-    # set the state to None => to exit the Main loop
-    context.set_state(None)
+  def enter(self, context: GameContext) -> None:
+    """ just clean up on exit """
+    context.ui.display(message="\n👋 goodbye! \n")
+
+    # clear buttons
+    context.ui.clear_buttons()
+
+    # close window 
+    context.ui.close()
+
+    # set the state to None
+    context.set_state(state=None)
   
-# ============= character ================
-# ============= character ================
-# ============= character ================
+  def handle_input(self, context: GameContext, user_input: str) -> None:
+    """ exit state, does not take any input currently """
+    return super().handle_input(context, user_input)
+
+#============= game context ================
+
+class GameContext:
+  """ hold game state and allows state transition """
+
+  def __init__(
+      self, 
+      ui: UI,
+      ):
+    self.ui = ui
+    self.player: Optional[Player | None] = None
+    self.enemy = None
+
+    # game state
+    self.state: IGameState | None = None
+
+  def set_state(self, state: IGameState | None) -> None:
+    """ just set the state """
+    # set current state
+    self.state = state
+
+    # start the program
+    self.start()
+
+  def start(self) -> None:
+    """ start the current state """
+    
+    # start the sate flow
+    #while self.state: # loop as long as state != None
+    if self.state:  
+      self.state.enter(context=self)
+  
+  def handle_input(self, user_input: str) -> None:
+    """ on ui submit -> this method will be called """
+    if self.state:
+      # if state not None -> call state.handle_input
+      self.state.handle_input(self, user_input=user_input)
+
+
+#============= main function ================
 
 def main():
+  root = tk.Tk()
+  root.title("RPG Game")
   
-  # io event bus
-  io_bus = EventBus()
+  # setup context and ui
+  context = GameContext(ui=None) # type: ignore
 
-  # print/input to console
-  inDevice, outDevice = ConsoleIn(), ConsoleOut()
+  ui = UI(root=root, context=context)
 
-  # console io manager
-  console_io = ConsoleIOManager(
-    inDevice=inDevice, 
-    outDevice=outDevice
-  )
-  
-  # io observer
-  io_observer = IOObserver(console_io=console_io)
+  # now pass ui back to context
+  context.ui = ui
 
-  # io observer subscribes to io bus
-  io_bus.subscribe(io_observer)
+  # set the init state ->and start the game
+  context.set_state(WelcomeState())
 
-  # context manager
-  context: GameContext = GameContext(
-    io=console_io,
-    io_bus=io_bus
-  )
+  # start the game
+  #context.start()
 
-  # set the init state
-  context.set_state(MainMenuState())
+  # start the tkinter event_loop
+  root.mainloop()
 
-  # start the Main loop => this is the state loop that controls the menus
-  context.run()
-
-# entry point of my app
 if __name__ == "__main__":
   main()
+
+
+#============= game state ================
+#============= game state ================
+#============= game state ================
+#============= game state ================
+#============= game state ================
+
